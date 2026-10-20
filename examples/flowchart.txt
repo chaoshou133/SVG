@@ -1,0 +1,19 @@
+# Replay: node dist/src/main.js < examples/flowchart.txt
+init 800 300
+create rect bg 0 0 800 300 #fafafa
+create g flowchart
+create g node1 in flowchart
+create rect start 120 100 160 60 #4a90d9 in node1
+create text start-label 155 135 "开始" in node1
+create g node2 in flowchart
+create rect process 520 100 160 60 #f5a623 in node2
+create text process-label 545 135 "处理数据" in node2
+create line arrow1 280 130 520 130 black in flowchart
+set arrow1 stroke-width 3
+set start-label fill white
+create circle dot 400 130 12 #e74c3c in flowchart
+move node2 0 60
+scale dot 1.5
+undo
+tree
+save examples/flowchart.svg

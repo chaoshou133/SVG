@@ -54,6 +54,9 @@ describe('Editor conventions', () => {
     assert.deepEqual(run('move'), ['error: usage: move <id> <dx> <dy>']);
     assert.deepEqual(run('create rect r 1 2'), ['error: usage: create rect <id> <x> <y> <w> <h> [fill] [in <containerId>]']);
     assert.deepEqual(run('create rect r 1 2 3 x'), ['error: invalid number: x']);
+    assert.deepEqual(run('create hexagon h 1 2'), ['error: unknown shape type: hexagon (is the plugin loaded?)']);
+    assert.deepEqual(run('create box n1 0 0 10 10 "x"'), ['error: unknown shape type: box (is the plugin loaded?)']);
+    assert.deepEqual(run('frobnicate'), ["error: unknown command: frobnicate. type 'help' for commands"]);
     assert.deepEqual(run('init 0 5'), ['error: canvas size must be positive']);
     assert.deepEqual(run('tree'), ['svg (800x600)']);
   });
