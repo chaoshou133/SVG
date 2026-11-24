@@ -1,0 +1,15 @@
+# Phase 2 extended commands & decorators transcript (commands & comments only)
+dir
+init 800 600
+create box n1 120 100 160 60 "处理数据"
+create line arrow1 280 130 520 130 black
+group flowchart n1 arrow1
+save snapshot.svg
+set n1 fill #f5a623
+tree
+stats
+dir
+undo
+tree
+help
+exit

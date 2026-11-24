@@ -2,6 +2,7 @@
   "plugins": [
     { "module": "./plugins/plugin-cmd-stats" },
     { "module": "./plugins/plugin-cmd-dir" },
-    { "module": "./plugins/plugin-shape-box" }
+    { "module": "./plugins/plugin-shape-box" },
+    { "module": "./plugins/plugin-tree-star" }
   ]
 }

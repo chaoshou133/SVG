@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { resolve } from 'node:path';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import boxPlugin, { Box } from '../plugins/plugin-shape-box';
 import { AppBootstrap } from '../src/host/AppBootstrap';
@@ -11,7 +12,27 @@ import type { ShapeProvider } from '../src/kernel/ext/ShapeProvider';
 import type { TreeDecorator } from '../src/kernel/ext/TreeDecorator';
 import { MemoryFileSystem } from './support/MemoryFileSystem';
 
-const CONFIG_PATH = resolve(__dirname, '..', '..', 'plugins.config.json');
+const REPO_ROOT = resolve(__dirname, '..', '..');
+
+function withBoxConfig<T>(fn: (cfgPath: string) => T): T {
+  const dir = mkdtempSync(join(REPO_ROOT, '.tmp-box-cfg-'));
+  try {
+    const cfgPath = join(dir, 'box-only.config.json');
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({
+        plugins: [
+          { module: '../plugins/plugin-cmd-stats' },
+          { module: '../plugins/plugin-shape-box' },
+        ],
+      }),
+      'utf8',
+    );
+    return fn(cfgPath);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 describe('box plugin — independent unit test via test-double PluginContext', () => {
   it('registers ShapeProvider, AttributeHandler, and TreeDecorator without host or sibling plugins', () => {
@@ -37,9 +58,10 @@ describe('box plugin — independent unit test via test-double PluginContext', (
 
 describe('box plugin — Phase 1 §6.1 Version B, boundaries, round-trip, and degradation', () => {
   it('reproduces Phase 1 §6.1 Version B box flowchart session via Mode B config', () => {
+    withBoxConfig((cfgPath) => {
     const fs = new MemoryFileSystem();
     const out = new BufferOutput();
-    const editor = new AppBootstrap().createEditor(['--config', CONFIG_PATH], fs, out, new NullDirectoryAdapter());
+    const editor = new AppBootstrap().createEditor(['--config', cfgPath], fs, out, new NullDirectoryAdapter());
 
     const run = (cmd: string): string[] => {
       editor.execute(cmd);
@@ -86,11 +108,13 @@ describe('box plugin — Phase 1 §6.1 Version B, boundaries, round-trip, and de
     const saved = fs.files.get('flowchart-box.svg') as string;
     assert.match(saved, /<g id="n1" data-kind="box">/);
     assert.match(saved, /<g id="n2" data-kind="box">/);
+    });
   });
 
   it('enforces id collision atomicity, nesting, ungroup rejection, and essential child protection', () => {
+    withBoxConfig((cfgPath) => {
     const out = new BufferOutput();
-    const editor = new AppBootstrap().createEditor(['--config', CONFIG_PATH], new MemoryFileSystem(), out, new NullDirectoryAdapter());
+    const editor = new AppBootstrap().createEditor(['--config', cfgPath], new MemoryFileSystem(), out, new NullDirectoryAdapter());
     const run = (cmd: string): string[] => {
       editor.execute(cmd);
       return out.take();
@@ -122,12 +146,14 @@ describe('box plugin — Phase 1 §6.1 Version B, boundaries, round-trip, and de
 
     // Non-essential nested child n3 CAN still be deleted normally
     assert.deepEqual(run('delete n3'), ['g#n3 deleted']);
+    });
   });
 
   it('round-trips box when plugin is installed, degrades to g without plugin, and rejects duplicate ids', () => {
+    withBoxConfig((cfgPath) => {
     const fs = new MemoryFileSystem();
     const out = new BufferOutput();
-    const edWithBox = new AppBootstrap().createEditor(['--config', CONFIG_PATH], fs, out, new NullDirectoryAdapter());
+    const edWithBox = new AppBootstrap().createEditor(['--config', cfgPath], fs, out, new NullDirectoryAdapter());
     edWithBox.execute('init 400 200');
     edWithBox.execute('create box b1 10 20 100 50 "Hi"');
     edWithBox.execute('save b.svg');
@@ -169,5 +195,6 @@ describe('box plugin — Phase 1 §6.1 Version B, boundaries, round-trip, and de
     // Previous document (`malformed.svg` containing b2) is preserved untouched!
     assert.equal(edWithBox.session.requireDocument().has('b2'), true);
     assert.equal(edWithBox.session.requireDocument().has('b3'), false);
+    });
   });
 });

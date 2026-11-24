@@ -1,6 +1,7 @@
 import cmdDir from '../../plugins/plugin-cmd-dir';
 import cmdStats from '../../plugins/plugin-cmd-stats';
 import shapeBox from '../../plugins/plugin-shape-box';
+import treeStar from '../../plugins/plugin-tree-star';
 import type { EditorSession } from '../kernel/cli/EditorSession';
 import { BuiltinAssembly } from './BuiltinAssembly';
 
@@ -17,5 +18,6 @@ export class CodeAssembly {
     session.plugins.loadPlugin(cmdStats);
     session.plugins.loadPlugin(cmdDir);
     session.plugins.loadPlugin(shapeBox);
+    session.plugins.loadPlugin(treeStar);
   }
 }
