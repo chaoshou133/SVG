@@ -13,7 +13,7 @@ npm run compile
 npm test
 ```
 
-在 VSCode / Cursor 中启动调试（Extension Development Host）：
+在 VSCode 中启动调试（Extension Development Host）：
 1. 用 VSCode 打开 `vscode-svg-extension/` 目录；
 2. 按 `F5`（已配置 `.vscode/launch.json`），将自动打开 `fixtures/` 目录的新宿主窗口；
 3. 在 Explorer 中观察 `example.svg` 右侧显示 `[]`，`plain.txt` 无标记；

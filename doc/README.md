@@ -1,233 +1,279 @@
-# SVG 编辑器（CLI）— PJ1 Phase 1 项目文档
+# Lab1 Phase 2：插件实践与插件式重构 — 项目文档
 
-> 运行：`npm install` → `npm run cli`（交互）；`npm test`（全部自动化测试）。
-> 运行时 **0 依赖**，仅 `typescript` / `@types/node` 两个开发依赖。
+> **作者**：刘桃宏（24300240029）
+> **仓库运行**：
+> - CLI 构建与测试：`npm test`（88 项自动化测试：架构规则、Phase 1 回归、加载器失败路径、属性事务、`stats`/`dir`/`box`/`modified-star` 插件与双装配逐字节一致性）
+> - CLI 启动（方式 A 代码装配）：`node dist/src/main.js`
+> - CLI 启动（方式 B 配置装配）：`node dist/src/main.js --config plugins.config.json`
+> - CLI 基线兼容（禁用可选插件）：`node dist/src/main.js --no-plugins`
+> - VSCode 扩展测试：`npm --prefix vscode-svg-extension test`（6 项单元测试）
+> - 度量脚本：`node scripts/generate-metrics.mjs`（输出至 `docs/metrics/`）
 
 ---
 
-## 1. 架构方案
+## 第一部分：VSCode 插件实践
 
-### 1.1 模块划分
+### 1.1 扩展结构与启动步骤
 
+扩展位于独立目录 `vscode-svg-extension/`，零第三方运行时依赖：
+
+- `src/extension.ts`：扩展入口 `activate` / `deactivate`，向 VSCode 注册两个 Provider；
+- `src/SvgBadgeRule.ts` & `src/SvgFileDecorationProvider.ts`：实现 Explorer 中 `.svg` 普通文件的 `[]` 徽标装饰；
+- `src/SvgOutlineNode.ts`、`src/SvgOutlineParser.ts` & `src/SvgDocumentSymbolProvider.ts`：实现带精确字符偏移的 XML/SVG 解析器与 VSCode 原生 Outline 符号提供器；
+- `fixtures/`：`example.svg`（嵌套分组、有/无 `id` 元素）、`plain.txt`（非 SVG 对照文件）、`broken.svg`（不完整 XML 容错对照）；
+- `test/extension.test.ts`：覆盖 `.svg` 标记规则、目录/非 SVG 过滤、嵌套大纲、无 `id` 节点、源码行号定位、编辑后刷新与不完整 XML 清空不崩溃。
+
+**安装、编译与启动**：
+```bash
+cd vscode-svg-extension
+npm install
+npm run compile
+npm test
 ```
-src/
-├── model/      领域模型：图形类层次（Composite）、文档、几何快照（Memento）、错误类型
-├── factory/    图形工厂：类型名 → 图形类（按名字分派的第 2 处，待重构为插件注册）
-├── commands/   可撤销编辑命令（Command 模式）+ CommandHistory（undo/redo 栈）
-├── io/         零依赖 XML 解析 / SVG 读写；文件系统抽象 FileSystem（IO 隔离）
-├── view/       显示格式化：tree 结构树、show 属性明细（Visitor 模式）
-├── cli/        REPL、分词器、CLI 命令处理器、命令注册表（按名字分派的第 1 处）、会话状态
-└── main.ts     组装根（Composition Root）：创建真实文件系统与控制台输出并启动 REPL
-```
+在 VSCode（或兼容宿主）中打开 `vscode-svg-extension/` 目录并按 `F5`（已配置 `.vscode/launch.json`），将启动加载了 `fixtures/` 的 Extension Development Host：
+1. 在 Explorer 中可见 `example.svg` 右侧显示 `[]`，`plain.txt` 与目录无标记，且文件名与文件内容不变；
+2. 打开 `example.svg`，展开左下角 **Outline（大纲）** 视图，可见 `svg → g#flow → rect#start / g#nested → text / circle#dot`，点击 `rect#start` 精准跳转到第 3 行源码；编辑文本时大纲自动更新；打开 `broken.svg` 时大纲安全清空且扩展不崩溃。
 
-| 模块 | 职责 | 不负责 |
+**真实运行效果截图**：
+
+![SVG 文件 [] 标记效果](images/vscode-svg-badge.png)
+
+*图 1.1：扩展开发宿主窗口中，Explorer 为 `example.svg` 与 `broken.svg` 附加 `[]` 标记，普通文件 `plain.txt` 无标记，文件名与内容保持不变。*
+
+![SVG 原生大纲与源码定位效果](images/vscode-svg-outline.png)
+
+*图 1.2：左下角原生大纲展示 `svg → g#flow → rect#start / g#nested → text / circle#dot` 嵌套层级（无 `id` 的 `<text>` 显示为 `text`），点击 `rect#start` 后右侧精确高亮定位至第 3 行源码。*
+
+### 1.2 VSCode 与插件的职责边界与注册-回调机制
+
+| 角色 | 核心职责 |
+|---|---|
+| **VSCode（宿主框架）** | 管理工作区文件树 UI、编辑器缓冲与生命周期；定义扩展点接口（`FileDecorationProvider`、`DocumentSymbolProvider`）；管理激活时机（`onStartupFinished`）与资源释放（`Disposable`）；在文件刷新、打开、编辑、点击大纲节点时主动调度回调并渲染 UI。 |
+| **扩展插件（`svg-editor-vscode`）** | 被动实现宿主契约接口：在 `activate(context)` 中实例化 `SvgFileDecorationProvider` 与 `SvgDocumentSymbolProvider`，通过 `vscode.window.registerFileDecorationProvider` 与 `vscode.languages.registerDocumentSymbolProvider({ pattern: '**/*.svg' }, ...)` 注册到宿主，并将返回的 `Disposable` 挂入 `context.subscriptions`。 |
+
+**注册与控制反转（IoC）流程**：
+1. 宿主启动完成后触发 `onStartupFinished`，加载 `dist/src/extension.js` 并调用 `activate(context)`；
+2. 插件向宿主注册两个 Provider 后即返回，不持有任何事件循环或 UI 控件；
+3. 当 Explorer 渲染文件项时，VSCode 回调 `provideFileDecoration(uri)`，仅当目标为普通文件且后缀为 `.svg` 时返回 `new vscode.FileDecoration('[]', 'SVG Vector File')`；
+4. 当用户打开或编辑 `.svg` 文件时，VSCode 回调 `provideDocumentSymbols(document)`，插件解析文本并映射出嵌套的 `vscode.DocumentSymbol[]` 树（含精确 `range` 与 `selectionRange`），由 VSCode 原生 Outline 视图负责绘制与点击跳转。
+
+### 1.3 文件装饰与经典 Decorator / Adapter 模式的对比分析
+
+- **与 GoF Decorator（装饰器模式）的对应与差异**：
+  - *相似之处*：意图都是“在不修改原有对象（磁盘文件名与文件内容）的前提下，动态为其附加额外表现/信息（Explorer 旁的 `[]` 徽标）”，且多个插件的装饰可并存。
+  - *核心差异*：经典 GoF Decorator 要求装饰器与被装饰对象实现**同一接口**并通过**对象组合递归包裹**（`Decorator implements Component` 持有 `Component` 引用并转发调用）；而 VSCode 的 `FileDecorationProvider` 并非包裹 `Uri` 或文件节点对象，而是采用 **策略/数据提供者（Provider）+ 宿主合成** 机制——插件仅返回一个轻量级值对象 `FileDecoration`（`badge`、`tooltip`），由 VSCode 视图层统一合并多个 Provider 的装饰元数据并渲染。因此它更接近“受控元数据贡献点（Contribution Point）”，避免了装饰链嵌套耦合。
+- **与 GoF Adapter（适配器模式）的对应与差异**：
+  - 在本扩展内部，`SvgDocumentSymbolProvider` 与 `SvgFileDecorationProvider` 本身承担了明确的 **Adapter** 角色：纯领域逻辑（`SvgOutlineParser` 返回偏移量 AST `SvgOutlineNode`；`SvgBadgeRule` 仅接收 `(fsPath, isDirectory)`）作为 Adaptee 与 VSCode 运行时完全解耦；Provider 将它们适配到 VSCode 目标接口（`DocumentSymbolProvider` / `FileDecorationProvider`），完成 `offset → document.positionAt()` 到 `vscode.Range` / `vscode.DocumentSymbol` 以及 `vscode.workspace.fs.stat` 到 `isDirectory` 的转换。这样既隔离了宿主 API，又使核心逻辑可在纯 Node 环境下独立单元测试。
+
+### 1.4 Phase 1 解析、模型与遍历代码的复用评估
+
+| Phase 1 模块 | 能否直接复用 | 原因与评估 |
 |---|---|---|
-| `model` | 图形的数据与行为（移动、缩放、设属性、容器增删子节点）、id 查找、快照与还原 | 字符串命令解析、输出格式、文件 |
-| `factory` | 根据类型名创建图形（CLI 参数或 XML 属性两种来源） | 决定图形挂在哪里 |
-| `commands` | 每条编辑命令一个类：执行前完整校验、执行、撤销；history 管理撤销/重做栈与 IO 锁 | 解析命令行、打印 |
-| `io` | XML 文本 ↔ 节点树；节点树 ↔ `SvgDocument`；文件读写接口 | 交互、撤销 |
-| `view` | 把模型渲染成 `tree` / `show` 文本 | 修改模型 |
-| `cli` | 读入一行 → 分词 → 查注册表 → 处理器解析参数 → 调用 commands / io / view → 输出 | 领域规则 |
+| `XmlParser`（词法与标签扫描） | **仅可借鉴思想，无法直接复用** | Phase 1 的 `XmlParser` 生成的 `XmlElement` 仅保留标签名、属性与文本，**丢弃了起始/结束字符偏移和标签名位置**，无法构造 VSCode 跳转源码所需的 `range` 与 `selectionRange`；且遇到不完整 XML 立即抛异常中断，虽可 `try/catch` 清空，但仍缺位置追踪。 |
+| `SvgReader` 与 `Shape`/`SvgDocument` 模型 | **不适合复用** | Phase 1 模型只服务于编辑器支持的 6 种图形，`SvgReader` 会跳过 `<path>`、`<defs>`、`<style>` 等合法 SVG 元素，并且会对无 `id` 元素**自动分配虚拟 `id`**（如 `rect1`）并告警——这与大纲视图“如实展示全部原始 XML 标签、无 `id` 仅显示标签名”的需求相冲突。 |
+| `TreeRenderer` / 遍历逻辑 | **无法直接复用** | CLI `TreeRenderer` 输出 ASCII 字符画字符串，而 VSCode 原生 Outline 要求返回层次化的 `vscode.DocumentSymbol` 对象树，渲染与交互由宿主接管。 |
+
+因此，VSCode 扩展独立实现了面向编辑器的偏移保留解析器 `SvgOutlineParser`（约 200 行），同时保持与 Phase 1 一致的零外部依赖、面向对象一类一文件风格。
+
+---
+
+## 第二部分：CLI 插件式重构
+
+### 2.1 重构前后架构对比（PlantUML）
+
+#### Phase 1（tag `final`）架构：静态内置与两处硬编码分派
 
 ```plantuml
-@startuml
-skinparam componentStyle rectangle
-package "cli" {
-  [Repl] --> [Editor]
-  [Editor] --> [CommandRegistry]
-  [CommandRegistry] --> [handlers/*Handler]
-  [handlers/*Handler] --> [EditorSession]
+@startuml phase1_arch
+package "src/ (Phase 1)" {
+  [main.ts] --> [cli]
+  [cli] --> [commands]
+  [cli] --> [io]
+  [cli] --> [view]
+  [cli] --> [factory]
+  [io] --> [factory]
+  [factory] --> [model]
+  [commands] --> [model]
+  [view] --> [model]
+  note right of [factory] : 硬编码 6 种内置图形类
+  note right of [cli] : CommandRegistry.standard() 硬编码 20 条命令
+  note right of [view] : ShapeVisitor 封闭枚举 6 种图形
 }
-package "commands" {
-  [CommandHistory]
-  [*Command]
-}
-package "io" {
-  [SvgReader]
-  [SvgWriter]
-  [XmlParser]
-  [FileSystem]
-}
-package "view" {
-  [TreeRenderer]
-  [ShowRenderer]
-}
-package "factory" {
-  [ShapeFactory]
-}
-package "model" {
-  [Shape] <|-- [Group]
-  [SvgDocument]
-}
-[handlers/*Handler] ..> [*Command]
-[EditorSession] ..> [CommandHistory]
-[handlers/*Handler] ..> [SvgReader]
-[handlers/*Handler] ..> [TreeRenderer]
-[handlers/*Handler] ..> [ShapeFactory]
-[*Command] ..> [Shape]
-[SvgReader] ..> [ShapeFactory]
-[SvgReader] ..> [XmlParser]
-[SvgWriter] ..> [SvgDocument]
-[TreeRenderer] ..> [Shape]
-[ShapeFactory] ..> [Shape]
 @enduml
 ```
 
-### 1.2 设计模式的选择与落地
+#### Phase 2（tag `p2`）三层插件式架构：内核 / 装配处 / 插件
 
-| 模式 | 解决的问题 | 落地位置 |
-|---|---|---|
-| **Command**（要求） | 编辑操作需要 undo/redo，且"一条命令 = 一个撤销单元" | `commands/Command.ts` 接口（`execute()/undo()` 返回回显文本）；每条编辑命令一个类（`CreateShapeCommand`、`MoveCommand`…）；`CommandHistory` 维护 undo / redo 栈，新命令清空 redo 栈，IO 命令后加锁 |
-| **Composite** | `move/scale/set/delete` 对 `<g>` 与叶子一视同仁 | `model/Shape.ts` 抽象基类；`GeometricShape` 叶子基类（Rect/Circle/Ellipse/Line/Text）；`Group` 容器递归转发 `move/scale/createMemento`；文档根 `SvgDocument` 与 `Group` 共同实现 `Container` 接口 |
-| **Memento** | scale 的逆运算 `1/f` 有浮点误差；撤销应精确还原 | `Shape.createMemento()` 返回 `ShapeMemento`；叶子保存几何属性副本，`Group` 保存子孙快照的组合（`CompositeMemento`）；`MoveCommand` / `ScaleCommand` 撤销时 `restore()` |
-| **Visitor** | tree 的每类图形摘要格式不同，又不想把显示逻辑塞进模型、也不允许 `switch(tag)` | `model/ShapeVisitor.ts`；`view/ShapeSummaryVisitor.ts` 为每种图形生成 `x=… y=… w=…` 摘要 |
-| **Factory（注册表）** | 类型名 → 图形类 | `factory/ShapeFactory.ts`，内部一张 `Map<string, ShapeClass>`；**按名字分派第 2 处，标注待重构**（Phase 2 改为 `ShapeProvider` 插件注册） |
-| **命令注册表** | 命令名 → 处理器 | `cli/CommandRegistry.ts`，一张 `Map<string, CliCommand>`；**按名字分派第 1 处，标注待重构**（可改为处理器自注册 / 插件命令） |
-| **依赖倒置（端口）** | IO 隔离、可测试 | `io/FileSystem.ts` 接口 + `NodeFileSystem` / 测试用 `test/support/MemoryFileSystem`；`cli/Output.ts` 接口 + `ConsoleOutput` / `BufferOutput`（测试与回放） |
+```plantuml
+@startuml phase2_arch
+package "src/kernel/ (稳定内核 - 零具体插件依赖)" {
+  [kernel/model]
+  [kernel/ext\n(4大扩展点 + Registries + PluginManager + EventBus)] --> [kernel/model]
+  [kernel/io\n(XmlParser, SvgReader/Writer, FileSystem, DirectoryAccess)] --> [kernel/model]
+  [kernel/io\n(XmlParser, SvgReader/Writer, FileSystem, DirectoryAccess)] --> [kernel/ext\n(4大扩展点 + Registries + PluginManager + EventBus)]
+  [kernel/commands\n(UndoableCommand, SetAttributeCommand等)] --> [kernel/model]
+  [kernel/commands\n(UndoableCommand, SetAttributeCommand等)] --> [kernel/ext\n(4大扩展点 + Registries + PluginManager + EventBus)]
+  [kernel/view\n(TreeRenderer, ShowRenderer)] --> [kernel/model]
+  [kernel/view\n(TreeRenderer, ShowRenderer)] --> [kernel/ext\n(4大扩展点 + Registries + PluginManager + EventBus)]
+  [kernel/cli\n(Editor, EditorSession, Repl, Tokenizer)] --> [kernel/ext\n(4大扩展点 + Registries + PluginManager + EventBus)]
+  [kernel/cli\n(Editor, EditorSession, Repl, Tokenizer)] --> [kernel/commands\n(UndoableCommand, SetAttributeCommand等)]
+  [kernel/cli\n(Editor, EditorSession, Repl, Tokenizer)] --> [kernel/io\n(XmlParser, SvgReader/Writer, FileSystem, DirectoryAccess)]
+}
 
-### 1.3 依赖方向规则
+package "src/host/ (宿主与装配处)" {
+  [AppBootstrap / main.ts] --> [BuiltinAssembly]
+  [AppBootstrap / main.ts] --> [CodeAssembly (方式A)]
+  [AppBootstrap / main.ts] --> [PluginLoader (方式B)]
+  [AppBootstrap / main.ts] --> [NodeFileSystem]
+  [AppBootstrap / main.ts] --> [NodeDirectoryAdapter]
+  [NodeDirectoryAdapter] ..|> [kernel/io\n(XmlParser, SvgReader/Writer, FileSystem, DirectoryAccess)] : implements DirectoryAccess
+  [PluginLoader (方式B)] --> [kernel/ext\n(4大扩展点 + Registries + PluginManager + EventBus)] : 动态 require(module)
+}
 
+package "plugins/ (独立插件包 - 仅依赖 kernel 公开抽象)" {
+  [builtin-shapes (6种图形)] --> [kernel/ext\n(4大扩展点 + Registries + PluginManager + EventBus)]
+  [builtin-commands (20条命令)] --> [kernel/ext\n(4大扩展点 + Registries + PluginManager + EventBus)]
+  [plugin-cmd-stats] --> [kernel/ext\n(4大扩展点 + Registries + PluginManager + EventBus)]
+  [plugin-cmd-dir] --> [kernel/ext\n(4大扩展点 + Registries + PluginManager + EventBus)]
+  [plugin-shape-box] --> [kernel/ext\n(4大扩展点 + Registries + PluginManager + EventBus)]
+  [plugin-tree-star] --> [kernel/ext\n(4大扩展点 + Registries + PluginManager + EventBus)]
+}
+
+[CodeAssembly (方式A)] --> [plugins/ (独立插件包 - 仅依赖 kernel 公开抽象)]
+@enduml
 ```
-cli ──► commands ──► model
- │  ──► io ──► factory ──► model
- │  ──► view ──────────► model
- └──► factory
-```
 
-| 模块 | 允许依赖 | 理由 |
-|---|---|---|
-| `model` | （无） | 领域核心最稳定，不能被任何上层变化波及 |
-| `factory` | `model` | 只知道如何构造图形 |
-| `commands` | `model` | 命令只操作模型；不知道参数来自 CLI 还是将来的 GUI/agent |
-| `io` | `model`, `factory` | 读入时需要按标签名构造图形 |
-| `view` | `model` | 只读模型生成文本 |
-| `cli` | 以上全部 | 最外层，负责组装 |
-| `main.ts` | `cli`, `io` | 组装根 |
-
-**禁止**：任何下层 import 上层（如 `model` → `commands`、`commands` → `io`、`view` → `cli`）；`io` 与 `view`、`commands` 互不依赖。
-该规则由测试 `test/architecture.test.ts` 自动检查（扫描每个源文件的 `import`），违反即测试失败。
-
-### 1.4 变化点假设
-
-| # | 可能的变化 | 留了什么 / 为什么不留 |
-|---|---|---|
-| 1 | **新增图形类型**（Phase 2 的 `box` 等插件） | `ShapeFactory` 注册表 + `ShapeClass` 构造接口；新增类型只需新类 + 一行注册。目前注册是硬编码在工厂构造函数中——这是**待重构项**，Phase 2 改成 `ShapeProvider` 插件 |
-| 2 | **新增命令 / 新的交互通道**（GUI、agent） | 编辑命令与 CLI 解耦：`commands` 不认识字符串参数，任何通道都可构造 `Command` 交给 `CommandHistory` |
-| 3 | **新的显示方式**（例如 JSON 输出） | `ShapeVisitor` 接口；新增显示 = 新 Visitor，不改模型 |
-| 4 | **存储介质变化**（浏览器、内存、网络） | `FileSystem` 接口 |
-| 5 | **set 的属性白名单变化** | 白名单由每个图形类自己声明（`settableAttributes()`），不集中 switch |
-| 6 | 新增 Visitor 方法的代价（新图形类型要改所有 Visitor） | **有意不处理**：Visitor 在"类型稳定、操作多变"时有利，Phase 1 类型固定；Phase 2 插件类型可提供默认 `visitGeneric` 回退 |
-| 7 | 结构路径寻址（XPath 风格） | **不留**：需求明确本阶段不要求，所有命令统一走 `SvgDocument.find(id)`，将来只需替换这一处查找 |
+**关键重构演进**：
+1. 消除了 Phase 1 遗留的两处按名硬编码分派（`ShapeFactory` 与 `CommandRegistry.standard()`），全部迁移为独立插件包经 `PluginManager` 注册；
+2. 用 `Shape.summary()` 多态替代了封闭的 6 类型 `ShapeVisitor`，新增图形无需修改内核或渲染器；
+3. 建立了可执行架构护栏 `test/architecture.test.ts`：强制校验 `kernel ↛ host/plugins`、`plugins ↛ host/sibling-plugins`、`PluginLoader` 零硬编码导入、零 `switch`、一类一文件、零第三方运行依赖。
 
 ---
 
-### 1.5 需求中未明确、由本实现决定的语义
+### 2.2 扩展点清单（§1 交付物）
 
-| 问题 | 决定 | 理由 |
+| 扩展点接口 | 职责 | 内核调用位置（文件与函数） | 已有实现 | 禁用本阶段可选扩展时的缺省行为 | 违反契约时框架报错方式 |
+|---|---|---|---|---|---|
+| **`ShapeProvider`** (`src/kernel/ext/ShapeProvider.ts`) | 注册图形类型：定义 `create` 参数解析、`help` 语法以及 SVG 读回还原（含 `data-kind` 复合图形）。 | ① `src/kernel/ext/ShapeRegistry.ts` → `createFromArgs()`（由 `CreateHandler` 与 `GroupCommand` 调用）；<br>② `src/kernel/io/SvgReader.ts` → `readElementList()` 调用 `findSpecialized()` / `findForElement()` 与 `createFromElement()`；<br>③ `ShapeRegistry.usages()`（由 `HelpHandler` 调用）。 | 内置：`RectShapeProvider`、`CircleShapeProvider`、`EllipseShapeProvider`、`LineShapeProvider`、`TextShapeProvider`、`GroupShapeProvider`（`plugins/builtin-shapes/`）；<br>可选：`BoxShapeProvider`（`plugins/plugin-shape-box/`）。 | 仅内置 6 种图形可用；`create box ...` 报 `error: unknown shape type: box (is the plugin loaded?)`；读回 `<g data-kind="box">` 自动降级为普通 `g`。 | ① 注册空 `typeName` → 激活失败回滚并报 `error: plugin failed to activate: <name> (invalid shape provider: missing typeName)`；<br>② 重名注册 → 回滚并报 `error: duplicate registration: shapes/<typeName>`；<br>③ 与 `contributes.shapes` 不符 → 回滚并报 `error: plugin manifest mismatch: ...`；<br>④ 复合图读回重复 ID → `SvgReader.chooseId` 抛 `error: duplicate id in svg: <id>` 并保持原文档。 |
+| **`Command`** (`src/kernel/ext/Command.ts`) | 注册一条 CLI 命令，提供命令名、`usage`、`summary` 与执行逻辑 `run(args, session)`。 | ① `src/kernel/cli/Editor.ts` → `execute()` 调用 `session.commands.lookup(name).run(args, session)`；<br>② `src/kernel/ext/CommandRegistry.ts` → `all()`（由 `HelpHandler` 列出命令）。 | 内置：20 条 Phase 1 命令（`plugins/builtin-commands/`）；<br>可选：`StatsCommand`（`plugins/plugin-cmd-stats/`）、`DirCommand`（`plugins/plugin-cmd-dir/`）。 | 仅内置 20 条 Phase 1 命令可用；执行 `stats` 或 `dir` 报 `error: unknown command: <name>. type 'help' for commands`，且 `help` 中不显示它们。 | ① 注册空 `name` → 激活失败回滚；<br>② 重名命令 → 回滚并报 `error: duplicate registration: commands/<name>`；<br>③ 与 `contributes.commands` 不符 → 回滚并报 `error: plugin manifest mismatch: ...`；<br>④ 运行时抛出 `EditorError` → `Editor.execute` 输出 `error: <msg>` 且不崩溃。 |
+| **`TreeDecorator`** (`src/kernel/ext/TreeDecorator.ts`) | 为 `tree` 命令输出的根行及各图形节点行尾追加附加标签（如 `(box)`、`*`），不改动渲染器或内核。 | ① `src/kernel/view/TreeRenderer.ts` → `tagsFor()` 调用 `decorators.labelsFor(shape, doc)`（在 `renderDocument()`、`renderSubtree()`、`addChildren()` 中逐行调用）。 | 可选：`BoxTypeDecorator`（`plugins/plugin-shape-box/`，输出 `(box)`）、`ModifiedStarDecorator`（`plugins/plugin-tree-star/`，输出 `*`）。 | `TreeDecoratorRegistry` 为空，`tagsFor()` 返回空串，`tree` 输出与 Phase 1 `final` **逐字节一致**。 | ① 注册空 `name` → 激活失败回滚；<br>② 重名装饰器 → 回滚并报 `error: duplicate registration: decorators/<name>`；<br>③ 与 `contributes.decorators` 不符 → 回滚并报 `error: plugin manifest mismatch: ...`。 |
+| **`AttributeHandler`** (`src/kernel/ext/AttributeHandler.ts`) | 为特定图形的特定属性定义领域语义（如 `box` 的 `fill` 传播与 `label` 改写），无需扩充内核属性白名单。 | ① `src/kernel/commands/SetAttributeCommand.ts` → `execute()` 调用 `handlers.resolve(id, attr, ctx)` 并在文档状态快照事务中调用 `handler.apply(id, attr, value, ctx)`。 | 可选：`BoxAttributeHandler`（`plugins/plugin-shape-box/`，处理 `Box` 的 `fill` 与 `label`）。 | `resolve()` 返回 `null`，直接走 Phase 1 原有 `Shape.setAttribute()` 白名单规则（允许标准属性；未知属性报 `error: unknown attribute: <attr>`）。 | ① 注册空 `name` / 重名 / 清单不符 → 激活回滚并输出对应 `error:`；<br>② 多个处理器同最高优先级命中 → `AttributeHandlerRegistry.resolve()` 抛 `error: ambiguous attribute handlers for <id>.<attr>: ...`；<br>③ `apply()` 修改部分子部件后抛错 → `SetAttributeCommand.execute()` 立即恢复 `beforeSnapshot`，不入 undo 栈，不回退默认处理，输出 `error: <reason>`。 |
+
+---
+
+### 2.3 `dir` 命令与适配器模式说明（§2.2）
+
+`dir` 插件（`plugins/plugin-cmd-dir/`）通过 **GoF 适配器模式（对象适配器）** 隔离底层文件系统 API：
+
+| 适配器模式角色 | 代码位置 | 职责 |
 |---|---|---|
-| `scale` 是改坐标还是加 `transform` | 直接改几何属性，以原点为中心（需求原文"factor 同乘到全部几何属性"） | 与需求一致；`tree`/`show` 显示的数值即真实数值 |
-| `move` 容器 | 递归平移每个子孙的几何属性，不写 `transform` | 与 scale 统一；保存后的文件无需理解 transform 就能读回 |
-| `group` 新容器放在哪 | 放在**文档顺序第一个成员**的位置；成员按文档顺序进入容器 | 与 §6 示例（markers 出现在原 c1 的位置）一致 |
-| `front` / `back` | front = 同级最后（最后绘制，在最上层），back = 同级第一个 | SVG 的绘制顺序即文档顺序 |
-| IO 命令后的历史 | `init/read/save/canvas w h` 清空 undo/redo 栈并加锁；下一次编辑解锁 | 读入新文档后旧命令指向的对象已不存在，保留它们只会产生错误的撤销 |
-| 编辑命令撤销时的回显 | 需求只给了 move/set/delete 的格式，其余自定（如 `rect#r1 creation undone`） | 每条撤销都有回显，便于脚本回放核对 |
-| 读入不支持的元素（如 `<path>`） | 跳过并 `warning: skipped unsupported element <path>` | 本阶段只有 6 种类型；静默丢弃会让用户误以为保存无损 |
-| 读入未建模的属性（如 `transform`、`font-size`） | 原样保留，`show` 可见，保存时写回 | 尽量无损 round-trip |
-| 文件中 id 重复 | 后出现者重新分配 id 并警告 | 需求要求 id 强制唯一 |
-| `set` 对容器 | 只允许 `fill/stroke/stroke-width`，写在 `<g>` 上（SVG 继承） | Composite：容器与叶子共用 `set` 命令；几何属性对 `<g>` 无意义，报 `unknown attribute` |
+| **Target（目标接口）** | `src/kernel/io/DirectoryAccess.ts`（及 DTO `DirectoryEntry.ts`） | 内核定义的纯领域接口：`currentDirectory(): string` 与 `listEntries(dirPath: string): readonly DirectoryEntry[]`，不含任何 Node.js `fs` 类型。 |
+| **Adaptee（被适配者）** | Node.js 标准库 `node:fs` (`readdirSync(..., { withFileTypes: true })`) 与 `process.cwd()` | 平台具体的文件系统 API，返回 `fs.Dirent` 并抛出系统级异常（`ENOENT` / `EACCES`）。 |
+| **Adapter（适配器）** | `src/host/NodeDirectoryAdapter.ts` | 实现 `DirectoryAccess`，将 `Dirent` 映射为 `DirectoryEntry(name, 'dir' \| 'file' \| 'symlink' \| 'other')`，并将底层 FS 异常转换为统一的 `EditorError("cannot read directory: <path>")`。 |
+| **Client（客户端）** | `plugins/plugin-cmd-dir/DirCommand.ts` | 通过 `PluginContext.directoryAccess` 获取 `DirectoryAccess`，过滤 `.` / `..`，保留隐藏项，按“目录 `[DIR]` → 普通文件 `[FILE]` → 符号链接 `[LINK]` → 其他 `[OTHER]`”分组、组内按 UTF-16 字典序升序稳定输出（标记后统一以两个空格连接名称；不遍历符号链接目标；空目录输出 `(empty directory)`）。 |
 
-已知限制：`move/scale` 对带 `transform` 的外部 `<g>` 仍直接修改子图形坐标（视觉效果会被该 transform 缩放）；保存时 `viewBox` 总是写为 `0 0 w h`。
+**双装配一致性与独立测试**：代码装配与配置装配均由 `AppBootstrap` 注入同一个 `NodeDirectoryAdapter` 实例给 `EditorSession` 与 `PluginContext`；单元测试（`test/plugins-commands.test.ts`）既使用内存替身 `FakeDirectoryAccess` 独立验证混合项/隐藏项/空目录/读错/稳序，又使用临时目录配合真实 `NodeDirectoryAdapter` 验证端到端行为与双装配逐字节一致。
 
 ---
 
-## 2. 过程记录
+### 2.4 两种装配方式、配置格式与加载契约（§6）
 
-### 2.1 前期需求与架构讨论
+- **方式 A（代码装配）**：顶层组合根 `src/host/CodeAssembly.ts` 显式导入内置插件与可选插件，依次通过 `session.plugins.loadPlugin(plugin)` 注册。
+- **方式 B（配置装配）**：启动参数 `--config plugins.config.json` 由 `src/host/PluginLoader.ts` 动态解析配置并按数组顺序加载插件：
+  ```json
+  {
+    "plugins": [
+      { "module": "./plugins/plugin-cmd-stats" },
+      { "module": "./plugins/plugin-cmd-dir" },
+      { "module": "./plugins/plugin-shape-box" },
+      { "module": "./plugins/plugin-tree-star" }
+    ]
+  }
+  ```
+  - 相对路径以 `plugins.config.json` 所在目录为基准解析，包名按 Node 模块解析规则定位；
+  - `enabled: false` 完全跳过；`options` 对象透传至 `PluginContext.options`（例如 `plugin-shape-box` 读取 `options.fill` 作为默认填充色）；
+  - 每个插件通过其 `package.json` 的 `contributes`（`shapes` / `commands` / `decorators` / `attributes` 四类名称列表）声明所提供的扩展。
+- **共享事务注册管道**：方式 A 与方式 B 均经过 `src/kernel/ext/PluginManager.ts` 的 `loadPlugin()`，具备统一的重复注册检查、清单比对与异常回滚能力，保证加载后行为与输出逐字节一致。
+- **加载器四类失败与异常容错**（全部在 `test/loader.test.ts` 中覆盖）：
+  - 配置非法：`error: invalid plugin config`（回退内置能力继续启动）；
+  - 顶层模块找不到：`error: plugin not found: <module>`（区分子依赖失败：模块存在但求值或子依赖报错归入激活失败）；
+  - 缺默认导出：`error: plugin has no default export: <module>`；
+  - 清单不一致：`error: plugin manifest mismatch: <name> (declared: …, registered: …)`（撤销全部暂存）；
+  - 激活抛错：`error: plugin failed to activate: <name> (<reason>)`（撤销全部暂存）；
+  - 同类重名：`error: duplicate registration: <category>/<name>`（撤销当前插件全部暂存）。
 
-以下讨论发生在建仓库之前，结论直接用于本仓库的实现。
-
-- **需求对齐**：我通读需求文档，逐条整理硬性约束：模块划分；必须使用 Command 模式（Composite 语义也是需求要求的；Memento、Visitor、Factory 是后来在架构讨论中选定的）；禁止 `switch(tag)` 式分派；只允许两处按名字分派，且须标注待重构；一类一文件。我要求 AI 先输出架构方案，确认后才能写代码。
-- **架构评审**：我对 AI 的初始方案提出修改：运行时零第三方依赖，XML 解析手写 `XmlParser`；测试使用 Node 内置的 `node:test`，不用 jest/vitest；`model` 模块不能依赖任何其他模块。
-- **撤销方案**：AI 最初提出用逆运算撤销（`move` 反向平移、`scale(1/factor)`）。我指出 `scale(3)` 之后再 `scale(1/3)` 会产生浮点误差，坐标无法精确复原，于是改为执行前保存快照、撤销时恢复（Memento）。
-- **读入时自动补 id**：AI 最初按出现顺序分配 `rect1`、`rect2`。我指出如果文件里本来就有 `id="rect1"`，就会产生重复 id，于是改为先收集所有已有 id 再分配，并处理文件内部本身就有重复 id 的情况。
-- **分词器的引号语义**：AI 最初的分词器分不清 `"in"`（文本内容）和 `in`（关键字）。我要求在 token 上保留"是否带引号"的信息，只有不带引号的 `in` 才算关键字。
-- **测试期望值出错**：迭代中有测试失败，我对照需求文档判断是测试的期望值写错了，而不是业务代码有 bug，于是修改测试而不改实现。
-
-### 2.2 实现过程
-
-实现阶段使用 Claude Code（Claude Opus 5.5）协作完成。以下是有代表性的讨论与迭代，按时间顺序。
-
-**① 先读需求、列出交付物，再动手。** 开始前让 AI 通读 `doc/requirements.md`，整理"做什么 / 交什么 / 需要我提供什么"。AI 指出截止时间实际只剩 5 天（而不是"两周"），并把需求中的硬约束（一类一文件、禁止 `switch(tag)`、只允许两处按名字分派且须标注待重构）单独列出——这些后来都变成了 `test/architecture.test.ts` 里的自动检查，而不是靠人工记忆。
-
-**② 环境问题：AI 的第一个方案不可行，换路径解决。**
-- AI 想直接在 E 盘建目录，被沙箱拒绝；改为由我在文件选择器里授予 E 盘目录访问权限。
-- 推送到 GitHub 时，`ssh -T git@github.com` 一直挂起。AI 判断是 22 端口被网络屏蔽，改用 GitHub 官方的 443 端口 SSH（`ssh://git@ssh.github.com:443/chaoshou133/SVG.git`），验证通过，无需安装其他工具。
-
-**③ "尽量 0 依赖"的取舍。** 我要求零依赖。AI 的处理：运行时零依赖（自己写 `XmlParser`），只保留 `typescript` 和 `@types/node` 两个开发依赖；测试用 Node 自带的 `node:test`，不引入 vitest/jest。另外 npm 上 TypeScript 最新版已是 7.x（Go 重写版，编译选项有变化），AI 选择锁定 `~5.9.3` 以求稳定。
-
-**④ 撤销方案：从"逆运算"改为 Memento。** 设计时最直接的思路是 `move` 的撤销做 `move(-dx,-dy)`、`scale` 的撤销做 `scale(1/f)`。评估后发现 `scale 3` 再 `scale 1/3` 会得到 `0.9999999` 之类的值，所以改为执行前保存几何快照、撤销时恢复（`GeometryMemento` / `CompositeMemento`），并用测试 `memento restores geometry exactly` 固定下来。
-
-**⑤ 需求本身的不一致：§6.1 的 tree 没有严格对齐。** 实现 tree 时，AI 按 §6 示例反推出对齐规则："详情列 = 最长的 `前缀 + ref` + 2"。逐字回放 §6 的会话能完全对上，但 §6.1 的流程图示例里有两行比其他行多一个空格，说明原文是手工排版的。决定：§6 逐字比较；§6.1 比较时把连续空白压缩成一个，并在测试里写明原因。
-
-**⑥ 读入文件时自动补 id 的陷阱。** 如果按出现顺序给无 id 的 `<rect>` 分配 `rect1`，而文件后面恰好有一个 `id="rect1"`，就会产生重复 id。AI 改为两遍扫描：先收集文件中所有显式 id，生成 id 时避开它们（`IdAllocator`）；同时处理"文件里本身就有重复 id"的情况。两种情况都有测试。
-
-**⑦ 带引号的 `"in"`。** `create text t 0 0 "in" in box` 中，第一个 `in` 是文字内容，第二个是关键字。只看分词后的字符串无法区分，所以 `Token` 记录了 `quoted` 标志，只有不带引号的 `in` 才被当作关键字。
-
-**⑧ 测试失败时，先判断是测试错还是实现错。** 开发中先后有 5 个测试失败，逐一检查后发现全是测试写错了：结构指纹漏了 text 内容；`front bg` 时 bg 本来就在最前面；两处手算的期望值数错了；还有一处 `addto` 的期望错误信息写错了。其中 `addto` 那条，实现返回的 `no such container` 才符合需求 §4.2 的约定（第一个参数是容器）。所以最后修改的是测试，实现没有改。
-
-**⑨ 代码精简。** `SvgReader` 中最初为了绕过 `Shape | null` 写了一个复杂的类型断言，评审时改成直接判断 null。
-
-### 我的补充
-
-> 以下内容由 AI 根据本次会话中我的实际操作和决定整理。
-
-- **项目位置**：我要求项目建在 E 盘。第一次授权文件夹时我选错了（选成了 C 盘下的目录），随后发现并纠正，最终放在 `E:\liutaohong\svg-editor`。
-- **零依赖是我定的约束**：AI 一开始提议用 `fast-xml-parser` 解析 XML、用 vitest 做测试，我要求尽量零依赖。结果是自己实现了 `XmlParser`，测试改用 Node 自带的 `node:test`。这项约束增加了 `io` 模块的工作量，但也让"IO 隔离"在架构里更加明确。
-- **权限与推送**：AI 没有权限修改自己的权限配置（被安全规则拦下），所以 E 盘的访问配置是我按 AI 给的命令在终端里自己写入的。推送时我问过是否需要借助 GitHub Desktop，AI 判断问题出在 22 端口被屏蔽，改走 443 端口的 SSH，不需要额外工具。
-- **打 tag 的时机**：AI 建议我先写完这一节再打 `final` tag。我选择先打 tag，保证截止前一定有可交付的版本，补充内容之后再把 tag 移到新提交上。
-- **"是否真的完成"由我追问**：完成后我追问了任务是否真的完成。AI 从 GitHub 重新克隆 `final` tag，在全新环境里安装、测试、运行，结果和本地一致。
-- **我的反思**：我对代码细节的逐行审查有限，主要依靠三样东西判断功能是否正确：自动化测试、需求原文会话的逐行回放、浏览器里的渲染效果。§1.5 中需求未写明的语义（scale 以原点为中心、group 的插入位置、IO 命令后清空历史等）是 AI 提出的，我接受了这些决定。后续阶段如果需求另有解释，需要回头修改这些地方。
+**Git 判据与双装配验证证据**：
+- **方式 B 独立提交（`b63e2cf`）**：`git diff --name-status b63e2cf^ b63e2cf` 仅新增 `plugins/plugin-shape-box/*`、修改 `plugins.config.json` 及新增 `test/plugin-box.test.ts`，`src/` 与既有插件差异为 **0**；
+- **方式 A 独立提交（`ae6b9c8`）**：`git diff --name-status ae6b9c8^ ae6b9c8` 仅修改 `src/host/CodeAssembly.ts`（+2 行），内核、加载器与既有插件差异为 **0**；
+- **加载器独立性**：`src/host/PluginLoader.ts` 中不含任何具体插件名导入、映射表或 `switch` 分支（并由 `test/architecture.test.ts` 自动化断言）；
+- **双装配逐字节一致**：`test/dual-assembly.test.ts` 真实拉起 `node dist/src/main.js`（方式 A）与 `node dist/src/main.js --config plugins.config.json`（方式 B），分别回放 `doc/transcript/cli-1.txt`、`doc/transcript/box-session.txt` 与 `doc/transcript/commands-session.txt`，三次对比输出均 **逐字节完全一致**。
 
 ---
 
-## 3. 一致性自查
+### 2.5 架构决策记录（ADR）
 
-### 3.1 模块划分：实际目录与方案是否一致？
+#### ADR-01：`AttributeHandler` 接口、优先级冲突解决与事务性回滚契约
+- **背景**：初始接口仅有 `handles(shapeId, attr)` 与 `apply(shapeId, attr, value)`，未约定如何安全访问目标图形、多处理器冲突如何裁决，以及部分修改后抛错或多次修改如何保证单步 `undo`/`redo` 与回滚。
+- **决策**：
+  1. 传入只读访问门面 `AttributeContext { document, getShape(shapeId) }`，处理器只能通过图形类的公开方法修改状态，保持字段封装；
+  2. 冲突裁决采用 **显式优先级 + 平局拒绝**：`AttributeHandlerRegistry.resolve()` 收集所有 `handles === true` 的处理器，按 `priority`（默认 `0`）降序选取唯一最高者；若最高优先级存在多个平局，则抛出 `EditorError("ambiguous attribute handlers ...")`，杜绝静默覆盖；
+  3. 事务与撤销由内核 `SetAttributeCommand` 统一保障：调用 `handler.apply()` 前捕获 `doc.snapshotStates()`（覆盖全部图形的几何、样式、扩展属性与文本内容）；若 `apply()` 抛错则立即恢复 `beforeSnapshot` 并重抛错误，不入 `CommandHistory` 且不回退默认属性白名单；成功则捕获 `afterSnapshot`，使一次 `set` 无论改多少子部件均构成单个原子 `undo`/`redo` 单元。
+- **权衡**：快照开销为 $O(N)$（$N$ 为当前画布元素数），对 CLI 规模微秒级可忽略，却能彻底防御第三方插件在异常路径下漏写回滚代码导致的状态污染。
 
-| 方案中的模块 | 实际 | 一致 |
-|---|---|---|
-| `model/` | `Shape`、`GeometricShape`、`Rect/Circle/Ellipse/Line/Text`、`Group`、`SvgDocument`、`Container`、`ChildList`、`ShapeMemento`/`GeometryMemento`/`CompositeMemento`、`ShapeVisitor`、`Num`、`EditorError` | ✅ |
-| `factory/` | `ShapeFactory`、`ShapeClass` | ✅ |
-| `commands/` | `Command`、`CommandHistory`、9 个命令类 + `Placement` | ✅（见修订 R1） |
-| `io/` | `XmlParser`、`XmlElement`、`XmlText`、`SvgReader`、`SvgWriter`、`IdAllocator`、`FileSystem`、`NodeFileSystem` | ✅（见修订 R2） |
-| `view/` | `TreeRenderer`、`ShowRenderer`、`ShapeSummaryVisitor` | ✅ |
-| `cli/` | `Repl`、`Editor`、`EditorSession`、`Tokenizer`、`Token`、`CommandRegistry`、`CliCommand`、`Output`/`ConsoleOutput`/`BufferOutput`、`handlers/` 下 19 个处理器 | ✅ |
+#### ADR-02：`box` 复合图形子部件 ID 派生、读回降级与不变量保护
+- **背景**：`box` 同时是容器与由插件维护结构的复合图形，面临子部件 ID 冲突、畸形 SVG 读回及用户误删子部件破坏内部结构三类边界。
+- **决策**：
+  1. **子部件 ID 派生与原子创建**：固定派生 `<id>-rect` 与 `<id>-label`，由 `CreateShapeCommand` 在插入前遍历 `shape.subtree()` 检查全部 ID 唯一性，任一冲突则整条命令失败不留残片；
+  2. **读回还原与降级**：无 `box` 插件时 `SvgReader` 自动回落到 `g` 提供器降级为普通分组；已装 `box` 插件但 `<g data-kind="box">` 缺失必需的 `<id>-rect` 或 `<id>-label`（或标签类型不符）时，`BoxShapeProvider.createFromElement` 发出警告并返回 `null`，由 `SvgReader` 降级为普通 `g`，绝不构造残缺 `Box`；但若涉及复合图形的任意显式 ID 重复，`SvgReader.chooseId` 立即抛 `EditorError("duplicate id in svg: ...")` 拒绝整次读入并保持原文档；
+  3. **不变量保护**：在内核 `Container` 增加 `assertCanDetachChild(child)` 并在 `Shape` 增加 `canUngroup()`。`Box` 对 `ungroup` 返回 `false`，对试图通过 `delete` / `addto` / `group` 拆走 `<id>-rect` 或 `<id>-label` 的操作抛出 `EditorError`，同时继续允许用户自由增删嵌套在 `box` 内的其他子图形。
 
-**修订记录**
-- **R1**：`commands/Placement` 不在最初方案里。`group/ungroup/addto/front/back` 都需要"摘下图形、记住原位置、撤销时放回"，于是抽成一个类，避免五处重复。
-- **R2**：最初方案把 `MemoryFileSystem` 列在 `io`。实现时把它放到了 `test/support/`，因为它只给测试用，不应该进入产品代码。方案表格已同步修改。
+#### ADR-03：`modified-star` 脏状态语义、祖先传播与多标签拼接顺序
+- **背景**：`modified-star` 需要准确标识未保存变更且与 `(box)` 互不感知地共存。
+- **决策**：
+  1. **Dirty 语义（内容对比）**：在 `ModifiedStarDecorator` 实例字段中保存最近一次 `init` / `read` / `save` 的画布尺寸与各节点指纹快照（零模块级全局变量）。每次 `edit` / `undo` / `redo` / `canvas` 事件后重新比对：新建节点在保存前因不在基线中立即标 `*`；节点被编辑后标 `*`；执行 `undo` 回到与保存点完全一致的内容后 `*` **自动消失**；执行 `save` 后刷新基线，所有 `*` 清空；
+  2. **祖先传播策略**：仅变更/新建节点自身及文档根 `svg (WxH)` 标 `*`，中间容器（如 `g#flowchart`、`g#n1`）除非自身属性或归属发生变化，不重复传播 `*`。该策略与需求图示完全一致，避免深层嵌套时满屏星号掩盖真正被修改的叶子；
+  3. **多标签拼接顺序**：`TreeDecoratorRegistry` 严格按插件注册顺序依次求值并以单个空格拼接（例如当 `g#n1` 自身 `stroke` 被改时输出 `g#n1 (box) *`），顺序确定且插件间零耦合。
 
-### 3.2 依赖方向：规则有没有被违反？
-
-- **自动检查**：`test/architecture.test.ts` 扫描 `src/` 下每个文件的相对 import，按 §1.3 的表格校验，当前**0 违规**。同一个测试还检查了：运行时代码只 import `node:` 内置模块；每个文件只导出一个与文件同名的类或接口；全仓库没有 `switch`；两处按名字分派都带有 `TODO(refactor` 标注。
-- **抽样人工核对**：
-  - `commands/MoveCommand.ts` 只 import `model/*`。✅
-  - `io/SvgReader.ts` import `factory/ShapeFactory`（仅类型）和 `model/*`，不认识任何具体图形类。✅
-  - `view/TreeRenderer.ts` 只 import `model/*` 和同模块的 `ShapeSummaryVisitor`。✅
-  - `model/` 下没有任何文件 import 其他模块。✅
-  - `cli/handlers/CreateHandler.ts` → `commands/CreateShapeCommand`，属于允许的 cli → commands。✅
+#### ADR-04：插件清单 `contributes` 校验时机与暂存原子回滚
+- **背景**：若插件先直接向 live 注册表写入扩展，后在 `activate()` 中途抛错或发现与 `package.json` 的 `contributes` 不一致，会残留半注册的脏状态。
+- **决策**：`PluginManager.loadPlugin()` 为每次加载构造独立的**暂存（staging）上下文**。`activate(ctx)` 期间所有注册只写入暂存列表并实时检测重复名；仅当 `activate` 正常返回且四类贡献（`shapes` / `commands` / `decorators` / `attributes`）集合与 `manifest.contributes` 完全一致时，才一次性原子提交到各注册表和事件总线；任意环节失败则直接丢弃暂存并输出规范 `error:`，已成功加载的其他插件不受影响。
 
 ---
 
-## 4. 质量保证手段
+### 2.6 代码度量摘要（自动从 Git 历史生成）
 
-1. **对照需求的回放测试（功能完整性）**：`test/fixtures/` 里放着需求 §6 和 §6.1 的完整会话原文，`test/transcript.test.ts` 逐条执行其中的命令，并逐行比对输出。§6 是逐字节比对，包括 tree 的列对齐、warning 和 error 文本；§6.1 只忽略空白对齐，另外还会检查保存出来的 SVG 内容。
-2. **命令覆盖**：命令表里全部 20 条命令（含 front/back，外加 exit），以及 §4.2 中本阶段适用的 10 种错误信息，在 `cli.test.ts` 和 `commands.test.ts` 里都有用例。`cannot ungroup composite shape` 属于 `box` 插件，本阶段不适用；`create box` 按要求报 `unknown shape type`，这一点也有测试。
-3. **撤销的往返性质测试**：`commands.test.ts` 中的 `roundTrip` 对每种编辑命令做"执行 → 撤销 → 重做"，用结构指纹（id、嵌套、全部属性、文本）断言撤销后与执行前完全一致、重做后与执行后完全一致，重做时的回显也与首次执行相同。
-4. **失败不改变状态**：12 种失败场景逐一断言：执行失败后文档指纹不变，undo 栈也不受影响。
-5. **IO round-trip**：读入 → 写出 → 再读入 → 再写出，两次写出的文本完全相同；另外覆盖了实体转义、CDATA、DOCTYPE、注释、格式错误时报告行号。
-6. **架构规则可执行**：见 §3.2，违反依赖方向或一类一文件的规则时 `npm test` 会失败，不靠人工自觉。
-7. **编译期**：TypeScript `strict` + `noImplicitOverride` + `noUnused*`。
-8. **人工冒烟**：`node dist/src/main.js < examples/flowchart.txt` 生成 `examples/flowchart.svg`，在浏览器中打开，确认渲染正确（节点、文字、连线、下移后的节点 2）。
+完整文件清单、行数拆分与圈复杂度增量见 [`docs/metrics/metrics.md`](../docs/metrics/metrics.md)（由 `scripts/generate-metrics.mjs` 从 `git ls-tree` / `git show` 自动统计生成，非手填）：
 
-当前结果：`npm test` → **69 个测试全部通过**。
+- **CLI 拆分（`final` → `p2`）**：原 Phase 1 所有源码耦合在单一 `src/` 下（72 文件，2650 行，圈复杂度 257）；重构后清晰拆分为 **内核 `src/kernel/`**（59 文件，圈复杂度 323）、**装配处 `src/host/` + `src/main.ts`**（8 文件，圈复杂度 61）与 **插件 `plugins/`**（50 文件，含内置与 4 个扩展插件，圈复杂度 130）。内核虽新增扩展点与事务注册基础设施，但此后新增 `stats`、`dir`、`box`、`modified-star` 四个插件时内核圈复杂度增量为 **0**。
+- **VSCode 扩展独立统计**：`vscode-svg-extension/src/` 共 6 文件、320 行、圈复杂度 54，不混入 CLI 重构增量。
+
+---
+
+### 2.7 对 AI 建议的检查与修正记录
+
+在本次开发与重构过程中，我对 AI 给出的设计建议与初版代码进行了逐项核查，并针对以下 5 处问题提出了明确修正：
+
+1. **检查 `dir` 输出格式（规范示例 vs 规范正文）**
+   - **AI 初始建议**：参考规范 §2.2 示例块的视觉对齐，建议对 `[DIR]` 后补 2 个空格、对 `[FILE]` 后补 1 个空格使文件名左对齐。
+   - **检查发现的问题**：核对规范正文明确要求“目录和普通文件分别使用 `[DIR]`、`[FILE]` 标记，标记后用两个空格连接名称”，按列对齐会违反正文约定。
+   - **修正方案**：要求统一在 `[DIR]`、`[FILE]`（及特殊项 `[LINK]`、`[OTHER]`）后固定使用两个空格连接名称，并在 `test/plugins-commands.test.ts` 中断言精确格式。
+
+2. **检查 Phase 1 基线兼容性（版本号与报错前缀）**
+   - **AI 初始建议**：重构 CLI 时将 `Editor.VERSION` 升级为 `'0.2'`，并将未知命令错误简化为 `unknown command: <name>`。
+   - **检查发现的问题**：对照规范 §6“基础兼容性比较时须禁用新增插件，对照 `final` 的输出”，上述改动会导致 `--no-plugins` 模式下的启动横幅与 Phase 1 `test/cli.test.ts` 回归测试不一致。
+   - **修正方案**：保留 `Editor.VERSION = '0.1'` 与原有的 `unknown command: <name>. type 'help' for commands` 提示（既保持前缀匹配又与 `final` 逐字节兼容），用 `test/dual-assembly.test.ts` 验证 `--no-plugins` 回归通过。
+
+3. **检查 `box` 读回时的重复 ID 处理策略**
+   - **AI 初始建议**：沿用 Phase 1 `SvgReader` 的通用逻辑，遇到重复 ID 时统一发出警告并自动重分配新 ID，对畸形 `box` 统一降级为普通 `<g>`。
+   - **检查发现的问题**：核对规范 §4 边界要求“重复 id 违反全局唯一性，不能仅靠降级消除，必须拒绝整个读入”，但若把普通 SVG 也全部改为报错又会破坏 Phase 1 `test/io.test.ts` 中普通图形重分配的既有测试。
+   - **修正方案**：在 `SvgReader` 中引入 `strictUniqueIds` 机制——普通元素维持 Phase 1 的告警重分配兼容行为，而涉及 `data-kind` 复合图形的任意重复 ID 立即抛出 `EditorError("duplicate id in svg: ...")` 拒绝整次读入并保持原文档不变，同时在 `test/plugin-box.test.ts` 中补充了回归用例。
+
+4. **检查 `PluginLoader` 的清单路径解析与子依赖报错区分**
+   - **AI 初始建议**：加载插件时直接 `try { require(specifier) } catch` 统一报 `plugin not found`，并从编译后的 `dist/` 目录向上查找 `package.json`。
+   - **检查发现的问题**：① 模块存在但内部 `require` 子依赖失败时会被误报为顶层模块找不到（违反 §6 加载契约）；② 在 `dist/` 下向上查找可能越过插件目录命中仓库根 `package.json` 导致 `manifest mismatch`。
+   - **修正方案**：将模块解析拆分为 `require.resolve`（失败才报 `plugin not found`）与 `require(resolvedPath)`（失败报 `plugin failed to activate`）两阶段，并优先从配置相对路径定位插件自身的 `package.json`，在 `test/loader.test.ts` 中专门覆盖了子依赖失败与全部四类加载失败路径。
+
+5. **检查 `TreeRenderer` 无标签基线与多标签共存**
+   - **AI 初始建议**：在 `TreeRenderer` 渲染每行时直接拼接 `base + ' ' + tags` 并调用 `.trimEnd()`，且在 `modified-star` 插件中使用模块级 `Set` 记录脏节点。
+   - **检查发现的问题**：① 模块级变量违反 §5“必须封装在标签实例字段里”的要求，会导致多会话测试状态串扰；② 需确保无标签时与 Phase 1 列对齐输出逐字节一致。
+   - **修正方案**：将快照与脏集合全部封装在 `ModifiedStarDecorator` 实例私有字段中，通过 `DocumentEventBus` 接收生命周期事件，并在 `test/plugin-tree-star.test.ts` 中增加双实例隔离测试与完整状态机测试。
