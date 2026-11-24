@@ -1,0 +1,27 @@
+{
+  "name": "svg-editor-vscode",
+  "displayName": "SVG Badge & Outline",
+  "description": "VSCode extension displaying [] badge on SVG files and native Outline hierarchy for SVG elements.",
+  "version": "0.1.0",
+  "publisher": "svg-editor-lab",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/src/extension.js",
+  "contributes": {},
+  "scripts": {
+    "compile": "tsc -p ./tsconfig.json",
+    "test": "tsc -p ./tsconfig.json && node --test \"dist/test/**/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "~5.9.3"
+  }
+}
