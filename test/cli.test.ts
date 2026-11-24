@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { BufferOutput } from '../src/cli/BufferOutput';
-import { Editor } from '../src/cli/Editor';
-import { Tokenizer } from '../src/cli/Tokenizer';
+import { BufferOutput } from '../src/kernel/cli/BufferOutput';
+import { AppBootstrap } from '../src/host/AppBootstrap';
+import { NullDirectoryAdapter } from '../src/host/NullDirectoryAdapter';
+import { Tokenizer } from '../src/kernel/cli/Tokenizer';
 import { MemoryFileSystem } from './support/MemoryFileSystem';
 import { Transcript } from './support/Transcript';
 
 function session(files: Record<string, string> = {}): { run: (...lines: string[]) => string[]; fs: MemoryFileSystem } {
   const fs = new MemoryFileSystem(files);
   const out = new BufferOutput();
-  const editor = new Editor(fs, out);
+  const editor = new AppBootstrap().createEditor(['--no-plugins'], fs, out, new NullDirectoryAdapter());
   return {
     fs,
     run: (...lines) => {
@@ -171,7 +172,7 @@ describe('Editor conventions', () => {
 
   it('exit stops the loop', () => {
     const fs = new MemoryFileSystem();
-    const editor = new Editor(fs, new BufferOutput());
+    const editor = new AppBootstrap().createEditor(['--no-plugins'], fs, new BufferOutput(), new NullDirectoryAdapter());
     assert.equal(editor.execute('help'), true);
     assert.equal(editor.execute('exit'), false);
   });

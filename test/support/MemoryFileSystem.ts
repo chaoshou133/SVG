@@ -1,5 +1,5 @@
-import type { FileSystem } from '../../src/io/FileSystem';
-import { EditorError } from '../../src/model/EditorError';
+import type { FileSystem } from '../../src/kernel/io/FileSystem';
+import { EditorError } from '../../src/kernel/model/EditorError';
 
 /** In-memory FileSystem for tests. Paths listed in `readOnly` fail on write. */
 export class MemoryFileSystem implements FileSystem {

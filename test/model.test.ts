@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { Circle } from '../src/model/Circle';
-import { EditorError } from '../src/model/EditorError';
-import { Group } from '../src/model/Group';
-import { Line } from '../src/model/Line';
-import { Num } from '../src/model/Num';
-import { Rect } from '../src/model/Rect';
-import { SvgDocument } from '../src/model/SvgDocument';
-import { Text } from '../src/model/Text';
+import { Circle } from '../plugins/builtin-shapes/Circle';
+import { EditorError } from '../src/kernel/model/EditorError';
+import { Group } from '../plugins/builtin-shapes/Group';
+import { Line } from '../plugins/builtin-shapes/Line';
+import { Num } from '../src/kernel/model/Num';
+import { Rect } from '../plugins/builtin-shapes/Rect';
+import { SvgDocument } from '../src/kernel/model/SvgDocument';
+import { Text } from '../plugins/builtin-shapes/Text';
 
 describe('Num', () => {
   it('parses plain numbers strictly', () => {

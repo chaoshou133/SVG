@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { ShapeFactory } from '../src/factory/ShapeFactory';
-import { SvgReader } from '../src/io/SvgReader';
-import { SvgWriter } from '../src/io/SvgWriter';
-import { XmlParser } from '../src/io/XmlParser';
-import type { Text } from '../src/model/Text';
+import builtinShapes from '../plugins/builtin-shapes';
+import { BufferOutput } from '../src/kernel/cli/BufferOutput';
+import { EditorSession } from '../src/kernel/cli/EditorSession';
+import { NullDirectoryAdapter } from '../src/host/NullDirectoryAdapter';
+import { MemoryFileSystem } from './support/MemoryFileSystem';
+import { SvgReader } from '../src/kernel/io/SvgReader';
+import { SvgWriter } from '../src/kernel/io/SvgWriter';
+import { XmlParser } from '../src/kernel/io/XmlParser';
+import type { Text } from '../plugins/builtin-shapes/Text';
 
 const OTHER_SVG = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300">
@@ -21,7 +25,9 @@ const OTHER_SVG = `<?xml version="1.0" encoding="UTF-8"?>
 
 function read(source: string): { warnings: string[]; doc: ReturnType<SvgReader['read']> } {
   const warnings: string[] = [];
-  const doc = new SvgReader(new ShapeFactory()).read(source, (w) => warnings.push(w));
+  const s = new EditorSession(new MemoryFileSystem(), new BufferOutput(), new NullDirectoryAdapter());
+  s.plugins.loadPlugin(builtinShapes);
+  const doc = new SvgReader(s.shapes).read(source, (w) => warnings.push(w));
   return { warnings, doc };
 }
 

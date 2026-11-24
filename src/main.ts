@@ -1,7 +1,3 @@
-import { ConsoleOutput } from './cli/ConsoleOutput';
-import { Editor } from './cli/Editor';
-import { Repl } from './cli/Repl';
-import { NodeFileSystem } from './io/NodeFileSystem';
+import { AppBootstrap } from './host/AppBootstrap';
 
-// Composition root: the only place that picks concrete IO implementations.
-new Repl(new Editor(new NodeFileSystem(), new ConsoleOutput())).start();
+new AppBootstrap().run(process.argv.slice(2));

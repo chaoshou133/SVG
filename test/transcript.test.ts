@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { BufferOutput } from '../src/cli/BufferOutput';
-import { Editor } from '../src/cli/Editor';
+import { BufferOutput } from '../src/kernel/cli/BufferOutput';
+import { AppBootstrap } from '../src/host/AppBootstrap';
+import { NullDirectoryAdapter } from '../src/host/NullDirectoryAdapter';
 import { MemoryFileSystem } from './support/MemoryFileSystem';
 import { Transcript } from './support/Transcript';
 
 /** Replays every step of a transcript and compares the editor's output with the recording. */
 function replay(fixture: string, fs: MemoryFileSystem, normalize: (line: string) => string = (line) => line): void {
   const out = new BufferOutput();
-  const editor = new Editor(fs, out);
+  const editor = new AppBootstrap().createEditor(['--no-plugins'], fs, out, new NullDirectoryAdapter());
   for (const step of Transcript.parse(Transcript.fixture(fixture))) {
     editor.execute(step.command);
     assert.deepEqual(out.take().map(normalize), step.expected.map(normalize), `output of: svg> ${step.command}`);

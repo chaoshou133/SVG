@@ -1,20 +1,26 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { AddToCommand } from '../src/commands/AddToCommand';
-import { CommandHistory } from '../src/commands/CommandHistory';
-import { CreateShapeCommand } from '../src/commands/CreateShapeCommand';
-import { DeleteCommand } from '../src/commands/DeleteCommand';
-import { GroupCommand } from '../src/commands/GroupCommand';
-import { MoveCommand } from '../src/commands/MoveCommand';
-import { ScaleCommand } from '../src/commands/ScaleCommand';
-import { SetAttributeCommand } from '../src/commands/SetAttributeCommand';
-import { UngroupCommand } from '../src/commands/UngroupCommand';
-import { ZOrderCommand } from '../src/commands/ZOrderCommand';
-import { ShapeFactory } from '../src/factory/ShapeFactory';
-import type { Container } from '../src/model/Container';
-import { SvgDocument } from '../src/model/SvgDocument';
+import { AddToCommand } from '../src/kernel/commands/AddToCommand';
+import { CommandHistory } from '../src/kernel/commands/CommandHistory';
+import { CreateShapeCommand } from '../src/kernel/commands/CreateShapeCommand';
+import { DeleteCommand } from '../src/kernel/commands/DeleteCommand';
+import { GroupCommand } from '../src/kernel/commands/GroupCommand';
+import { MoveCommand } from '../src/kernel/commands/MoveCommand';
+import { ScaleCommand } from '../src/kernel/commands/ScaleCommand';
+import { SetAttributeCommand } from '../src/kernel/commands/SetAttributeCommand';
+import { UngroupCommand } from '../src/kernel/commands/UngroupCommand';
+import { ZOrderCommand } from '../src/kernel/commands/ZOrderCommand';
+import builtinShapes from '../plugins/builtin-shapes';
+import { BufferOutput } from '../src/kernel/cli/BufferOutput';
+import { EditorSession } from '../src/kernel/cli/EditorSession';
+import { NullDirectoryAdapter } from '../src/host/NullDirectoryAdapter';
+import { MemoryFileSystem } from './support/MemoryFileSystem';
+import type { Container } from '../src/kernel/model/Container';
+import { SvgDocument } from '../src/kernel/model/SvgDocument';
 
-const factory = new ShapeFactory();
+const _session = new EditorSession(new MemoryFileSystem(), new BufferOutput(), new NullDirectoryAdapter());
+_session.plugins.loadPlugin(builtinShapes);
+const factory = _session.shapes;
 
 /** Compact structural fingerprint: ids with nesting and geometry. */
 function snapshot(container: Container): string {
@@ -91,7 +97,7 @@ describe('editing commands round-trip through undo/redo', () => {
 
   it('group takes the place of the first member and keeps document order', () => {
     const { doc, history } = setup();
-    const msg = roundTrip(doc, history, new GroupCommand(doc, 'markers', ['box', 'c1']));
+    const msg = roundTrip(doc, history, new GroupCommand(doc, 'markers', ['box', 'c1'], factory));
     assert.equal(msg, 'g#markers created with 2 children');
     assert.deepEqual(doc.children().map((s) => s.id), ['bg', 'title', 'markers', 'scene']);
     const markers = doc.require('markers').asContainer() as Container;
@@ -100,7 +106,7 @@ describe('editing commands round-trip through undo/redo', () => {
 
   it('group across different parents round-trips', () => {
     const { doc, history } = setup();
-    roundTrip(doc, history, new GroupCommand(doc, 'mix', ['l1', 'bg']));
+    roundTrip(doc, history, new GroupCommand(doc, 'mix', ['l1', 'bg'], factory));
   });
 
   it('ungroup puts children in the group position', () => {
@@ -125,8 +131,8 @@ describe('failed commands leave no trace', () => {
     ['missing shape', (doc) => new DeleteCommand(doc, 'r9'), /no such shape: r9/],
     ['non-positive scale', (doc) => new ScaleCommand(doc, 'bg', 0), /scale factor must be positive/],
     ['unknown attribute', (doc) => new SetAttributeCommand(doc, 'bg', 'cx', '1'), /unknown attribute: cx/],
-    ['group container with its descendant', (doc) => new GroupCommand(doc, 'bad', ['l1', 'scene']), /cannot group a container into its own descendant: scene/],
-    ['group with missing member', (doc) => new GroupCommand(doc, 'bad', ['bg', 'zz']), /no such shape: zz/],
+    ['group container with its descendant', (doc) => new GroupCommand(doc, 'bad', ['l1', 'scene'], factory), /cannot group a container into its own descendant: scene/],
+    ['group with missing member', (doc) => new GroupCommand(doc, 'bad', ['bg', 'zz'], factory), /no such shape: zz/],
     ['ungroup top-level', (doc) => new UngroupCommand(doc, 'scene'), /cannot ungroup top-level container: scene/],
     ['ungroup leaf', (doc) => new UngroupCommand(doc, 'bg'), /not a container: bg/],
     ['addto into own descendant', (doc) => new AddToCommand(doc, 'inner', 'scene'), /cannot group a container into its own descendant: scene/],
