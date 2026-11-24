@@ -1,0 +1,9 @@
+{
+  "name": "@svgframe/plugin-cmd-stats",
+  "version": "0.2.0",
+  "private": true,
+  "main": "../../dist/plugins/plugin-cmd-stats/index.js",
+  "contributes": {
+    "commands": ["stats"]
+  }
+}
